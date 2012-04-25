@@ -237,20 +237,17 @@ def validatedForm(self, self_method, responder, simple_vals, param_vals,
     # clear out the status line as a courtesy
     form.set_html(".status", "")
 
-    # handle specific errors
-    if c.errors.errors:
-        handled_captcha = handled_ratelimit = False
-        for v in simple_vals:
-            if not handled_captcha and isinstance(v, VCaptcha):
-                form.has_errors('captcha', errors.BAD_CAPTCHA)
-                form.new_captcha()
-                handled_captcha = True
-            elif not handled_ratelimit and isinstance(v, VRatelimit):
-                form.ratelimit(v.seconds)
-                handled_ratelimit = True
-    
     # do the actual work
     val = self_method(self, form, responder, *a, **kw)
+
+    # add data to the output on some errors
+    for validator in simple_vals:
+        if (isinstance(validator, VCaptcha) and
+            form.has_errors('captcha', errors.BAD_CAPTCHA)):
+            form.new_captcha()
+        elif (isinstance(validator, VRatelimit) and
+              form.has_errors('ratelimit', errors.RATELIMIT)):
+            form.ratelimit(validator.seconds)
 
     if val:
         return val
@@ -853,6 +850,10 @@ class VSubmitSR(Validator):
             self.set_error(errors.SUBREDDIT_REQUIRED)
             return None
 
+        if not chksrname(sr_name):
+            self.set_error(errors.SUBREDDIT_NOEXIST)
+            return None
+
         try:
             sr = Subreddit._by_name(str(sr_name).strip())
         except (NotFound, AttributeError, UnicodeEncodeError):
@@ -989,6 +990,9 @@ class VUrl(VRequired):
     def run(self, url, sr = None, resubmit=False):
         if sr is None and not isinstance(c.site, FakeSubreddit):
             sr = c.site
+        elif not chksrname(sr):
+            self.set_error(errors.SUBREDDIT_NOEXIST)
+            sr = None
         elif sr:
             try:
                 sr = Subreddit._by_name(str(sr))

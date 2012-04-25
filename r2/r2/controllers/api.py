@@ -587,7 +587,8 @@ class ApiController(RedditController):
             jquery("#" + type + "-table").show(
                 ).find("table").insert_table_rows(user_row)
 
-            if type != 'friend':
+            if type != 'friend' and (type != 'banned' or
+                                     friend.has_interacted_with(container)):
                 msg = strings.msg_add_friend.get(type)
                 subj = strings.subj_add_friend.get(type)
                 if msg and subj and friend.name != c.user.name:
@@ -1258,8 +1259,6 @@ class ApiController(RedditController):
             c.site.sponsorship_size = None
             c.site._commit()
         elif c.site.header:
-            # reset the header image on the page
-            jquery('#header-img').attr("src", DefaultSR.header)
             c.site.header = None
             c.site.header_size = None
             c.site._commit()
@@ -1549,11 +1548,14 @@ class ApiController(RedditController):
         if thing._spam:
             kw['details'] = 'unspam'
             train_spam = True
+            insert = True
         else:
             kw['details'] = 'confirm_ham'
             train_spam = False
+            insert = False
 
-        admintools.unspam(thing, c.user.name, train_spam=train_spam)
+        admintools.unspam(thing, c.user.name, train_spam=train_spam,
+                          insert=insert)
 
         if isinstance(thing, (Link, Comment)):
             sr = thing.subreddit_slow
@@ -2134,6 +2136,9 @@ class ApiController(RedditController):
                 site = c.site
             else:
                 site = Subreddit._byID(link.sr_id, data=True)
+                # make sure c.user has permission to set flair on this link
+                if not c.user_is_admin and not site.is_moderator(c.user):
+                    abort(403, 'forbidden')
         else:
             flair_type = USER_FLAIR
             site = c.site
