@@ -1,5 +1,5 @@
 from r2.models import Account, Link, Comment, Trial, Vote, SaveHide
-from r2.models import Message, Inbox, Subreddit, ModContribSR, ModeratorInbox
+from r2.models import Message, Inbox, Subreddit, ModContribSR, ModeratorInbox, MultiReddit
 from r2.lib.db.thing import Thing, Merge
 from r2.lib.db.operators import asc, desc, timeago
 from r2.lib.db.sorts import epoch_seconds
@@ -335,7 +335,7 @@ def get_spam_comments(sr_id):
                           sort = db_sort('new'))
 
 def get_spam(sr):
-    if isinstance(sr, ModContribSR):
+    if isinstance(sr, (ModContribSR, MultiReddit)):
         srs = Subreddit._byID(sr.sr_ids, return_dict=False)
         results = []
         results.extend(get_spam_links(sr) for sr in srs)
@@ -381,7 +381,7 @@ def get_reported_comments(sr_id):
                           sort = db_sort('new'))
 
 def get_reported(sr):
-    if isinstance(sr, ModContribSR):
+    if isinstance(sr, (ModContribSR, MultiReddit)):
         srs = Subreddit._byID(sr.sr_ids, return_dict=False)
         results = []
         results.extend(get_reported_links(sr) for sr in srs)
@@ -433,7 +433,7 @@ def get_trials_links(sr):
     return s
 
 def get_trials(sr):
-    if isinstance(sr, ModContribSR):
+    if isinstance(sr, (ModContribSR, MultiReddit)):
         srs = Subreddit._byID(sr.sr_ids, return_dict=False)
         return get_trials_links(srs)
     else:
@@ -441,7 +441,7 @@ def get_trials(sr):
 
 def get_modqueue(sr):
     results = []
-    if isinstance(sr, ModContribSR):
+    if isinstance(sr, (ModContribSR, MultiReddit)):
         srs = Subreddit._byID(sr.sr_ids, return_dict=False)
 
         for sr in srs:
@@ -526,6 +526,8 @@ def rel_query(rel, thing_id, name, filters = []):
 
 vote_rel = Vote.rel(Account, Link)
 
+cached_userrel_query = cached_query(UserQueryCache, filter_thing2)
+cached_srrel_query = cached_query(SubredditQueryCache, filter_thing2)
 migrating_cached_userrel_query = migrating_cached_query(UserQueryCache, filter_thing2)
 migrating_cached_srrel_query = migrating_cached_query(SubredditQueryCache, filter_thing2)
 
@@ -537,11 +539,11 @@ def get_liked(user):
 def get_disliked(user):
     return rel_query(vote_rel, user, '-1')
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_hidden(user):
     return rel_query(SaveHide, user, 'hide')
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_saved(user):
     return rel_query(SaveHide, user, 'save')
 
@@ -820,14 +822,15 @@ def set_unread(messages, to, unread):
 def new_savehide(rel):
     user = rel._thing1
     name = rel._name
-    if name == 'save':
-        add_queries([get_saved(user)], insert_items = rel)
-    elif name == 'unsave':
-        add_queries([get_saved(user)], delete_items = rel)
-    elif name == 'hide':
-        add_queries([get_hidden(user)], insert_items = rel)
-    elif name == 'unhide':
-        add_queries([get_hidden(user)], delete_items = rel)
+    with CachedQueryMutator() as m:
+        if name == 'save':
+            m.insert(get_saved(user), [rel])
+        elif name == 'unsave':
+            m.delete(get_saved(user), [rel])
+        elif name == 'hide':
+            m.insert(get_hidden(user), [rel])
+        elif name == 'unhide':
+            m.delete(get_hidden(user), [rel])
 
 def changed(things, boost_only=False):
     """Indicate to search that a given item should be updated in the index"""

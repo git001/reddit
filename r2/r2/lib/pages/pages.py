@@ -21,7 +21,7 @@
 ################################################################################
 from r2.lib.wrapped import Wrapped, Templated, CachedTemplate
 from r2.models import Account, FakeAccount, DefaultSR, make_feedurl
-from r2.models import FakeSubreddit, Subreddit, Ad, AdSR
+from r2.models import FakeSubreddit, Subreddit, Ad, AdSR, SubSR
 from r2.models import Friends, All, Sub, NotFound, DomainSR, Random, Mod, RandomNSFW, MultiReddit, ModSR, Frontpage
 from r2.models import Link, Printable, Trophy, bidding, PromotionWeights, Comment
 from r2.models import Flair, FlairTemplate, FlairTemplateBySubredditIndex
@@ -189,31 +189,48 @@ class Reddit(Templated):
         self.toolbars = self.build_toolbars()
 
     def sr_admin_menu(self):
-        buttons = [NavButton(menu.community_settings, css_class = 'reddit-edit',
-                             dest = "edit"),
-                   NamedButton('modmail', dest = "message/inbox",
-                               css_class = 'moderator-mail'),
-                   NamedButton('moderators', css_class = 'reddit-moderators')]
+        buttons = []
+        is_single_subreddit = not isinstance(c.site, (ModSR, MultiReddit))
 
-        if c.site.type != 'public':
-            buttons.append(NamedButton('contributors',
-                                       css_class = 'reddit-contributors'))
-        elif (c.user_is_loggedin and
-              (c.site.is_moderator(c.user) or c.user_is_admin)):
-            buttons.append(NavButton(menu.contributors, "contributors",
-                                     css_class = 'reddit-contributors'))
+        if is_single_subreddit:
+            buttons.append(NavButton(menu.community_settings,
+                                     css_class="reddit-edit",
+                                     dest="edit"))
 
-        buttons.extend([
-                NamedButton('traffic', css_class = 'reddit-traffic'),
-                NamedButton('modqueue', css_class = 'reddit-modqueue'),
-                NamedButton('reports', css_class = 'reddit-reported'),
-                NamedButton('spam', css_class = 'reddit-spam'),
-                NamedButton('banned', css_class = 'reddit-ban'),
-                NamedButton('flair', css_class = 'reddit-flair'),
-                NamedButton('log', css_class = 'reddit-moderationlog'),
-                ])
-        return [NavMenu(buttons, type = "flat_vert", base_path = "/about/",
-                        css_class = "icon-menu",  separator = '')]
+        buttons.append(NamedButton("modmail",
+                                   dest="message/inbox",
+                                   css_class="moderator-mail"))
+
+        if is_single_subreddit:
+            buttons.append(NamedButton("moderators",
+                                       css_class="reddit-moderators"))
+
+            if c.site.type != "public":
+                buttons.append(NamedButton("contributors",
+                                           css_class="reddit-contributors"))
+            else:
+                buttons.append(NavButton(menu.contributors,
+                                         "contributors",
+                                         css_class="reddit-contributors"))
+
+            buttons.append(NamedButton("traffic", css_class="reddit-traffic"))
+
+        buttons += [NamedButton("modqueue", css_class="reddit-modqueue"),
+                    NamedButton("reports", css_class="reddit-reported"),
+                    NamedButton("spam", css_class="reddit-spam")]
+
+        if is_single_subreddit:
+            buttons += [NamedButton("banned", css_class="reddit-ban"),
+                        NamedButton("flair", css_class="reddit-flair")]
+
+        buttons.append(NamedButton("log", css_class="reddit-moderationlog"))
+
+        return SideContentBox(_('moderation tools'),
+                              [NavMenu(buttons,
+                                       type="flat_vert",
+                                       base_path="/about/",
+                                       css_class="icon-menu",
+                                       separator="")])
 
     def sr_moderators(self, limit = 10):
         accounts = Account._byID([uid
@@ -235,12 +252,21 @@ class Reddit(Templated):
         if c.user.pref_show_sponsorships or not c.user.gold:
             ps.append(SponsorshipBox())
 
+        if (c.user_is_loggedin and (isinstance(c.site, ModSR) or
+                                    c.site.is_moderator(c.user))):
+            ps.append(self.sr_admin_menu())
+
         no_ads_yet = True
         if isinstance(c.site, (MultiReddit, ModSR)) and c.user_is_loggedin:
             srs = Subreddit._byID(c.site.sr_ids,data=True,
                                   return_dict=False)
+
+            if (isinstance(c.site, MultiReddit) and
+                Subreddit.user_mods_all(c.user, srs)):
+                ps.append(self.sr_admin_menu())
+
             if srs:
-                ps.append(SideContentBox(_('these reddits'),[SubscriptionBox(srs=srs)]))
+                ps.append(SideContentBox(_('these subreddits'),[SubscriptionBox(srs=srs)]))
 
         # don't show the subreddit info bar on cnames unless the option is set
         if not isinstance(c.site, FakeSubreddit) and (not c.cname or c.site.show_cname_sidebar):
@@ -290,10 +316,6 @@ class Reddit(Templated):
                                          helplink = helplink, 
                                          more_href = mod_href,
                                          more_text = more_text))
-
-            if (c.user_is_loggedin and
-                (c.site.is_moderator(c.user) or c.user_is_admin)):
-                ps.append(SideContentBox(_('admin box'), self.sr_admin_menu()))
 
 
         if no_ads_yet and not g.disable_ads:
@@ -694,7 +716,7 @@ class BoringPage(Reddit):
         Reddit.__init__(self, **context)
 
     def build_toolbars(self):
-        if not isinstance(c.site, DefaultSR) and not c.cname:
+        if not isinstance(c.site, (DefaultSR, SubSR)) and not c.cname:
             return [PageNameNav('subreddit', title = self.pagename)]
         else:
             return [PageNameNav('nomenu', title = self.pagename)]
@@ -1089,17 +1111,23 @@ class EditReddit(Reddit):
     extension_handling= False
 
     def __init__(self, *a, **kw):
-        is_moderator = c.user_is_loggedin and \
-            c.site.is_moderator(c.user) or c.user_is_admin
+        from r2.lib.menus import menu
 
-        title = _('community settings') if is_moderator else \
-                _('about %(site)s') % dict(site=c.site.name)
+        try:
+            key = kw.pop("location")
+            title = menu[key]
+        except KeyError:
+            is_moderator = c.user_is_loggedin and \
+                c.site.is_moderator(c.user) or c.user_is_admin
 
-        Reddit.__init__(self, title = title, *a, **kw)
+            title = (_('subreddit settings') if is_moderator else
+                     _('about %(site)s') % dict(site=c.site.name))
+
+        Reddit.__init__(self, title=title, *a, **kw)
     
     def build_toolbars(self):
         if not c.cname:
-            return [PageNameNav('subreddit')]
+            return [PageNameNav('subreddit', title=self.title)]
         else:
             return []
 

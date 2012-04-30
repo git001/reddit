@@ -440,7 +440,9 @@ class FrontController(RedditController):
                          title=_('filter by action'), type='lightdrop', css_class='modaction-drop'),
                 NavMenu(mod_buttons, base_path=base_path, 
                         title=_('filter by moderator'), type='lightdrop')]
-        return EditReddit(content=panes, nav_menus=menus,
+        return EditReddit(content=panes,
+                          nav_menus=menus,
+                          location="log",
                           extension_handling=False).render()
 
     def _make_spamlisting(self, location, num, after, reverse, count):
@@ -507,7 +509,7 @@ class FrontController(RedditController):
 
         if not c.user_is_loggedin:
             return self.abort404()
-        if isinstance(c.site, ModSR):
+        if isinstance(c.site, (ModSR, MultiReddit)):
             level = 'mod'
         elif isinstance(c.site, ContribSR):
             level = 'contrib'
@@ -527,8 +529,9 @@ class FrontController(RedditController):
         else:
             return self.abort404()
 
-        return EditReddit(content = pane,
-                          extension_handling = extension_handling).render()
+        return EditReddit(content=pane,
+                          location=location,
+                          extension_handling=extension_handling).render()
 
     def _edit_normal_reddit(self, location, num, after, reverse, count, created,
                             name, user):
@@ -581,8 +584,9 @@ class FrontController(RedditController):
         else:
             return self.abort404()
 
-        return EditReddit(content = pane,
-                          extension_handling = extension_handling).render()
+        return EditReddit(content=pane,
+                          location=location,
+                          extension_handling=extension_handling).render()
 
     @base_listing
     @prevent_framing_and_css(allow_cname_frame=True)
@@ -600,6 +604,12 @@ class FrontController(RedditController):
             except NotFound:
                 c.errors.add(errors.USER_DOESNT_EXIST, field='name')
         if isinstance(c.site, ModContribSR):
+            return self._edit_modcontrib_reddit(location, num, after, reverse,
+                                                count, created)
+        elif isinstance(c.site, MultiReddit):
+            srs = Subreddit._byID(c.site.sr_ids, return_dict=False)
+            if not Subreddit.user_mods_all(c.user, srs) and not c.user_is_admin:
+                self.abort403()
             return self._edit_modcontrib_reddit(location, num, after, reverse,
                                                 count, created)
         elif isinstance(c.site, AllSR) and c.user_is_admin:
