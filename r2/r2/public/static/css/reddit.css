@@ -247,17 +247,13 @@ ul.flat-vert {text-align: left;}
 #modmail.nohavemail {
     background-image: url(../modmailgray.png);  /* SPRITE */
 }
-<<<<<<< HEAD
-.user {color: grey;}
 
-=======
 .user {color: gray;}
 .user .userkarma {
     cursor: help;
     font-weight: bold;
     border-bottom: 1px dotted gray;	
 }
->>>>>>> upstream/master
 
 .pagename {
     font-weight: bold;
@@ -670,6 +666,7 @@ ul.flat-vert {text-align: left;}
 .tagline .alum { color: #BE1337; }
 .tagline a.author.admin { font-weight: bold }
 .tagline a:hover { text-decoration: underline }
+.tagline .edited-timestamp{ cursor: default }
 
 a.author { margin-right: 0.5em; }
 
@@ -1221,7 +1218,7 @@ a.star { text-decoration: none; color: #ff8b60 }
 
 /* comments */
 
-.comment { margin-left: 10px; }
+.comment, .content .details { margin-left: 10px; }
 .comment .edit-body { display: none; visibility: hidden; }
 .comment .midcol { margin-left: 0px; }
 .comment .title { font-size: small; margin-top: 10px;}
@@ -1467,7 +1464,7 @@ textarea.gray { color: gray; }
 .subreddit .description {font-size: small; max-width: 60em;}
 .subreddit .key {display: block;}
 .subreddit .title { font-size: medium; margin-right: 5px; }
-.subreddit .midcol { margin-right: 5px; margin-top: 5px; text-align: right; }
+.subreddit .midcol { margin-right: 5px; margin-top: 5px; text-align: right; width: 12em; }
 
 .fancy-toggle-button {
     display: block;
@@ -4269,14 +4266,34 @@ dd { margin-left: 20px;  }
     color: gray; 
 }
 
-.sidecontentbox h1 {
+.sidecontentbox .title h1 {
+    display: inline;
     text-transform:uppercase;
     margin: 0;
     color: gray;
     font-size: 130%;
 }
 
-.titlebox form.toggle {
+.sidecontentbox.collapsible .title {
+    cursor: pointer;
+}
+
+.sidecontentbox .collapse-button {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    line-height: 10px;
+    text-align: center;
+    font-size: 10px;
+    background: #eee;
+    color: #333;
+    border: 1px solid #999;
+    border-radius: 2px;
+    margin: 1px 8px;
+    vertical-align: bottom;
+}
+
+.titlebox form.toggle, .leavemoderator {
     margin: 0;
     padding: 5px 0px;
     font-size: smaller;
@@ -5101,8 +5118,6 @@ tr.gold-accent + tr > td {
 .modactions.editflair {
     background-image: url(../modactions_editflair.png); /* SPRITE */
 }
-<<<<<<< HEAD
-=======
 .modactions.distinguish {
     background-image: url(../modactions_distinguish.png); /* SPRITE */
 }
@@ -5298,9 +5313,6 @@ tr.gold-accent + tr > td {
     font-family: 'Courier New', monospace;
     width: 50%;
 }
-<<<<<<< HEAD
->>>>>>> upstream/master
-=======
 
 #classy-error {
     text-align: center;
@@ -5309,4 +5321,3 @@ tr.gold-accent + tr > td {
 #classy-error .md {
     display: inline-block;
 }
->>>>>>> upstream/master

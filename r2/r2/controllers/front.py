@@ -38,8 +38,8 @@ from r2.lib.db.operators import desc
 from r2.lib.db import queries
 from r2.lib.db.tdb_cassandra import MultiColumnQuery
 from r2.lib.strings import strings
+from r2.lib.search import SearchQuery, SearchException, InvalidQuery
 from r2.lib.solrsearch import RelatedSearchQuery, SubredditSearchQuery
-from r2.lib.indextank import IndextankQuery, IndextankException, InvalidIndextankQuery
 from r2.lib.contrib.pysolr import SolrError
 from r2.lib import jsontemplates
 from r2.lib import sup
@@ -113,13 +113,12 @@ class FrontController(RedditController):
 
     @prevent_framing_and_css()
     @validate(VAdmin(),
-              article = VLink('article'))
-    def GET_details(self, article):
-        """The (now depricated) details page.  Content on this page
+              thing = VByName('article'))
+    def GET_details(self, thing):
+        """The (now deprecated) details page.  Content on this page
         has been subsubmed by the presence of the LinkInfoBar on the
         rightbox, so it is only useful for Admin-only wizardry."""
-        return DetailsPage(link = article, expand_children=False).render()
-
+        return DetailsPage(thing=thing, expand_children=False).render()
 
     def GET_selfserviceoatmeal(self):
         return BoringPage(_("self service help"), 
@@ -359,6 +358,10 @@ class FrontController(RedditController):
         return res
 
     def GET_stylesheet(self):
+        # de-stale the subreddit object so we don't poison nginx's cache
+        if not isinstance(c.site, FakeSubreddit):
+            c.site = Subreddit._byID(c.site._id, data=True, stale=False)
+
         if hasattr(c.site,'stylesheet_contents') and not g.css_killswitch:
             c.allow_loggedin_cache = True
             self.check_modified(c.site,'stylesheet_contents',
@@ -397,15 +400,12 @@ class FrontController(RedditController):
               action=VOneOf('type', ModAction.actions))
     @api_doc(api_section.moderation)
     def GET_moderationlog(self, num, after, reverse, count, mod, action):
-        if not c.user_is_loggedin:
+        if not c.user_is_loggedin or not (c.user_is_admin or
+                                          c.site.is_moderator(c.user)):
             return self.abort404()
 
         if isinstance(c.site, (MultiReddit, ModSR)):
             srs = Subreddit._byID(c.site.sr_ids, return_dict=False)
-
-            # check that user is mod on all requested srs
-            if not Subreddit.user_mods_all(c.user, srs) and not c.user_is_admin:
-                return self.abort404()
 
             # grab all moderators
             mod_ids = set(Subreddit.get_all_mod_ids(srs))
@@ -416,8 +416,6 @@ class FrontController(RedditController):
         elif isinstance(c.site, FakeSubreddit):
             return self.abort404()
         else:
-            if not c.site.is_moderator(c.user) and not c.user_is_admin:
-                return self.abort404()
             mod_ids = c.site.moderators
             mods = Account._byID(mod_ids, data=True)
 
@@ -543,6 +541,7 @@ class FrontController(RedditController):
             if created == 'true':
                 pane.append(InfoBar(message = strings.sr_created))
             c.allow_styles = True
+            c.site = Subreddit._byID(c.site._id, data=True, stale=False)
             pane.append(CreateSubreddit(site = c.site))
         elif location == 'moderators':
             pane = ModList(editable = is_moderator)
@@ -607,8 +606,7 @@ class FrontController(RedditController):
             return self._edit_modcontrib_reddit(location, num, after, reverse,
                                                 count, created)
         elif isinstance(c.site, MultiReddit):
-            srs = Subreddit._byID(c.site.sr_ids, return_dict=False)
-            if not Subreddit.user_mods_all(c.user, srs) and not c.user_is_admin:
+            if not (c.user_is_admin or c.site.is_moderator(c.user)):
                 self.abort403()
             return self._edit_modcontrib_reddit(location, num, after, reverse,
                                                 count, created)
@@ -726,10 +724,10 @@ class FrontController(RedditController):
         try:
             cleanup_message = None
             try:
-                q = IndextankQuery(query, site, sort)
+                q = SearchQuery(query, site, sort)
                 num, t, spane = self._search(q, num=num, after=after, 
                                              reverse = reverse, count = count)
-            except InvalidIndextankQuery:
+            except InvalidQuery:
                 # strip the query down to a whitelist
                 cleaned = re.sub("[^\w\s]+", "", query)
                 cleaned = cleaned.lower()
@@ -739,7 +737,7 @@ class FrontController(RedditController):
                     num, t, spane = 0, 0, []
                     cleanup_message = strings.completely_invalid_search_query
                 else:
-                    q = IndextankQuery(cleaned, site, sort)
+                    q = SearchQuery(cleaned, site, sort)
                     num, t, spane = self._search(q, num=num, after=after, 
                                                  reverse=reverse, count=count)
                     cleanup_message = strings.invalid_search_query % {
@@ -754,11 +752,12 @@ class FrontController(RedditController):
                              nav_menus = [SearchSortMenu(default=sort)],
                              search_params = dict(sort = sort), 
                              infotext=cleanup_message,
-                             simple=False, site=c.site, 
-                             restrict_sr=restrict_sr).render()
+                             simple=False, site=c.site,
+                             restrict_sr=restrict_sr,
+                             ).render()
 
             return res
-        except (IndextankException, socket.error), e:
+        except SearchException + (socket.error,) as e:
             return self.search_fail(e)
 
     def _search(self, query_obj, num, after, reverse, count=0):
@@ -776,7 +775,7 @@ class FrontController(RedditController):
         # computed after fetch_more
         try:
             res = listing.listing()
-        except (IndextankException, SolrError, socket.error), e:
+        except SearchException + (SolrError, socket.error) as e:
             return self.search_fail(e)
         timing = time_module.time() - builder.start_time
 

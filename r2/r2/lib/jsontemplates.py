@@ -212,6 +212,7 @@ class SubredditJsonTemplate(ThingJsonTemplate):
                                                 url          = "path",
                                                 over18       = "over_18",
                                                 description  = "description",
+                                                public_description = "public_description",
                                                 display_name = "name",
                                                 header_img   = "header",
                                                 header_size  = "header_size",
@@ -292,6 +293,7 @@ class LinkJsonTemplate(ThingJsonTemplate):
                                                 subreddit_id = "subreddit_id",
                                                 is_self      = "is_self", 
                                                 permalink    = "permalink",
+                                                edited       = "editted"
                                                 )
 
     def thing_attr(self, thing, attr):
@@ -306,6 +308,9 @@ class LinkJsonTemplate(ThingJsonTemplate):
                                height = media_embed.height,
                                content = media_embed.content)
            return dict()
+        elif attr == "editted" and not isinstance(thing.editted, bool):
+            return (time.mktime(thing.editted.astimezone(pytz.UTC).timetuple())
+                    - time.timezone)
         elif attr == 'subreddit':
             return thing.subreddit.name
         elif attr == 'subreddit_id':
@@ -351,12 +356,16 @@ class CommentJsonTemplate(ThingJsonTemplate):
                                                 banned_by    = "banned_by",
                                                 approved_by  = "approved_by",
                                                 parent_id    = "parent_id",
+                                                edited       = "editted"
                                                 )
 
     def thing_attr(self, thing, attr):
         from r2.models import Comment, Link, Subreddit
         if attr == 'link_id':
             return make_fullname(Link, thing.link_id)
+        elif attr == "editted" and not isinstance(thing.editted, bool):
+            return (time.mktime(thing.editted.astimezone(pytz.UTC).timetuple())
+                    - time.timezone)
         elif attr == 'subreddit':
             return thing.subreddit.name
         elif attr == 'subreddit_id':
@@ -592,6 +601,7 @@ class SubredditSettingsTemplate(ThingJsonTemplate):
     _data_attrs_ = dict(subreddit_id = 'site._fullname',
                         title = 'site.title',
                         description = 'site.description',
+                        public_description = 'site.public_description',
                         language = 'site.lang',
                         subreddit_type = 'site.type',
                         content_options = 'site.link_type',

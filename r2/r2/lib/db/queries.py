@@ -8,8 +8,9 @@ from r2.lib import utils
 from r2.lib.solrsearch import DomainSearchQuery
 from r2.lib import amqp, sup, filters
 from r2.lib.comment_tree import add_comments, update_comment_votes
-from r2.models.query_cache import cached_query, merged_cached_query, \
-                                  CachedQuery, CachedQueryMutator
+from r2.models.query_cache import (cached_query, merged_cached_query,
+                                   CachedQuery, CachedQueryMutator,
+                                   MergedCachedQuery)
 from r2.models.query_cache import UserQueryCache, SubredditQueryCache
 from r2.models.query_cache import ThingTupleComparator
 
@@ -528,14 +529,12 @@ vote_rel = Vote.rel(Account, Link)
 
 cached_userrel_query = cached_query(UserQueryCache, filter_thing2)
 cached_srrel_query = cached_query(SubredditQueryCache, filter_thing2)
-migrating_cached_userrel_query = migrating_cached_query(UserQueryCache, filter_thing2)
-migrating_cached_srrel_query = migrating_cached_query(SubredditQueryCache, filter_thing2)
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_liked(user):
     return rel_query(vote_rel, user, '1')
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_disliked(user):
     return rel_query(vote_rel, user, '-1')
 
@@ -547,40 +546,46 @@ def get_hidden(user):
 def get_saved(user):
     return rel_query(SaveHide, user, 'save')
 
-@migrating_cached_srrel_query
+@cached_srrel_query
 def get_subreddit_messages(sr):
     return rel_query(ModeratorInbox, sr, 'inbox')
 
-@migrating_cached_srrel_query
+@cached_srrel_query
 def get_unread_subreddit_messages(sr):
     return rel_query(ModeratorInbox, sr, 'inbox',
                           filters = [ModeratorInbox.c.new == True])
 
+def get_unread_subreddit_messages_multi(srs):
+    if not srs:
+        return []
+    queries = [get_unread_subreddit_messages(sr) for sr in srs]
+    return MergedCachedQuery(queries)
+
 inbox_message_rel = Inbox.rel(Account, Message)
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_inbox_messages(user):
     return rel_query(inbox_message_rel, user, 'inbox')
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_unread_messages(user):
     return rel_query(inbox_message_rel, user, 'inbox',
                           filters = [inbox_message_rel.c.new == True])
 
 inbox_comment_rel = Inbox.rel(Account, Comment)
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_inbox_comments(user):
     return rel_query(inbox_comment_rel, user, 'inbox')
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_unread_comments(user):
     return rel_query(inbox_comment_rel, user, 'inbox',
                           filters = [inbox_comment_rel.c.new == True])
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_inbox_selfreply(user):
     return rel_query(inbox_comment_rel, user, 'selfreply')
 
-@migrating_cached_userrel_query
+@cached_userrel_query
 def get_unread_selfreply(user):
     return rel_query(inbox_comment_rel, user, 'selfreply',
                           filters = [inbox_comment_rel.c.new == True])
@@ -590,11 +595,11 @@ def get_inbox(user):
                          get_inbox_messages(user),
                          get_inbox_selfreply(user))
 
-def get_sent(user):
-    q = Message._query(Message.c.author_id == user._id,
-                       Message.c._spam == (True, False),
-                       sort = desc('_date'))
-    return make_results(q)
+@migrating_cached_query(UserQueryCache)
+def get_sent(user_id):
+    return Message._query(Message.c.author_id == user_id,
+                          Message.c._spam == (True, False),
+                          sort = desc('_date'))
 
 def get_unread_inbox(user):
     return merge_results(get_unread_comments(user),
@@ -707,22 +712,21 @@ def new_comment(comment, inbox_rels):
     if inbox_rels:
         for inbox_rel in tup(inbox_rels):
             inbox_owner = inbox_rel._thing1
-            job_dict = { job_key: inbox_rel }
-            if inbox_rel._name == "inbox":
-                inbox_func  = get_inbox_comments
-                unread_func = get_unread_comments
-            elif inbox_rel._name == "selfreply":
-                inbox_func = get_inbox_selfreply
-                unread_func = get_unread_selfreply
-            else:
-                raise ValueError("wtf is " + inbox_rel._name)
+            with CachedQueryMutator() as m:
+                if inbox_rel._name == "inbox":
+                    query = get_inbox_comments(inbox_owner)
+                elif inbox_rel._name == "selfreply":
+                    query = get_inbox_selfreply(inbox_owner)
+                else:
+                    raise ValueError("wtf is " + inbox_rel._name)
 
-            add_queries([inbox_func(inbox_owner)], **job_dict)
+                if not comment._deleted:
+                    m.insert(query, [inbox_rel])
+                else:
+                    m.delete(query, [inbox_rel])
 
-            if comment._deleted:
-                add_queries([unread_func(inbox_owner)], **job_dict)
-            else:
-                set_unread(comment, inbox_owner, True)
+                set_unread(comment, inbox_owner,
+                           unread=not comment._deleted, mutator=m)
 
 
 def new_subreddit(sr):
@@ -768,15 +772,16 @@ def new_vote(vote, foreground=False):
     if isinstance(item, Link):
         # must update both because we don't know if it's a changed
         # vote
-        if vote._name == '1':
-            add_queries([get_liked(user)], insert_items = vote, foreground = foreground)
-            add_queries([get_disliked(user)], delete_items = vote, foreground = foreground)
-        elif vote._name == '-1':
-            add_queries([get_liked(user)], delete_items = vote, foreground = foreground)
-            add_queries([get_disliked(user)], insert_items = vote, foreground = foreground)
-        else:
-            add_queries([get_liked(user)], delete_items = vote, foreground = foreground)
-            add_queries([get_disliked(user)], delete_items = vote, foreground = foreground)
+        with CachedQueryMutator() as m:
+            if vote._name == '1':
+                m.insert(get_liked(user), [vote])
+                m.delete(get_disliked(user), [vote])
+            elif vote._name == '-1':
+                m.delete(get_liked(user), [vote])
+                m.insert(get_disliked(user), [vote])
+            else:
+                m.delete(get_liked(user), [vote])
+                m.delete(get_disliked(user), [vote])
 
 def new_message(message, inbox_rels):
     from r2.lib.comment_tree import add_message
@@ -785,39 +790,56 @@ def new_message(message, inbox_rels):
     for inbox_rel in tup(inbox_rels):
         to = inbox_rel._thing1
         add_queries([get_sent(from_user)], insert_items=message)
-        # moderator message
-        if isinstance(inbox_rel, ModeratorInbox):
-            add_queries([get_subreddit_messages(to)],
-                        insert_items = inbox_rel)
-        # personal message
-        else:
-            add_queries([get_inbox_messages(to)],
-                        insert_items = inbox_rel)
-        set_unread(message, to, True)
+
+        with CachedQueryMutator() as m:
+            # moderator message
+            if isinstance(inbox_rel, ModeratorInbox):
+                m.insert(get_subreddit_messages(to), [inbox_rel])
+            # personal message
+            else:
+                m.insert(get_inbox_messages(to), [inbox_rel])
+
+            set_unread(message, to, unread=True, mutator=m)
 
     add_message(message)
 
-def set_unread(messages, to, unread):
+def set_unread(messages, to, unread, mutator=None):
     # Maintain backwards compatability
     messages = tup(messages)
 
+    if not mutator:
+        m = CachedQueryMutator()
+    else:
+        m = mutator
+
     if isinstance(to, Subreddit):
         for i in ModeratorInbox.set_unread(messages, unread):
-            kw = dict(insert_items = i) if unread else dict(delete_items = i)
-            add_queries([get_unread_subreddit_messages(i._thing1)], **kw)
+            q = get_unread_subreddit_messages(i._thing1_id)
+            if unread:
+                m.insert(q, [i])
+            else:
+                m.delete(q, [i])
     else:
         # All messages should be of the same type
+        # (asserted by Inbox.set_unread)
         for i in Inbox.set_unread(messages, unread, to=to):
-            kw = dict(insert_items = i) if unread else dict(delete_items = i)
-            if isinstance(messages[0], Comment) and not unread:
-                add_queries([get_unread_comments(i._thing1)], **kw)
-                add_queries([get_unread_selfreply(i._thing1)], **kw)
-            elif i._name == 'selfreply':
-                add_queries([get_unread_selfreply(i._thing1)], **kw)
-            elif isinstance(messages[0], Comment):
-                add_queries([get_unread_comments(i._thing1)], **kw)
+            query = None
+            if isinstance(messages[0], Comment):
+                if i._name == "inbox":
+                    query = get_unread_comments(i._thing1_id)
+                elif i._name == "selfreply":
+                    query = get_unread_selfreply(i._thing1_id)
+            elif isinstance(messages[0], Message):
+                query = get_unread_messages(i._thing1_id)
+            assert query is not None
+
+            if unread:
+                m.insert(query, [i])
             else:
-                add_queries([get_unread_messages(i._thing1)], **kw)
+                m.delete(query, [i])
+
+    if not mutator:
+        m.send()
 
 def new_savehide(rel):
     user = rel._thing1

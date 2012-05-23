@@ -30,6 +30,7 @@ from r2.models.oauth2 import OAuth2Client
 from r2.models import ModAction
 from r2.models import Thing
 from r2.config import cache
+from r2.lib.menus import CommentSortMenu
 from r2.lib.tracking import AdframeInfo
 from r2.lib.jsonresponse import json_respond
 from r2.lib.jsontemplates import is_api
@@ -49,7 +50,7 @@ from r2.lib.strings import plurals, rand_strings, strings, Score
 from r2.lib.utils import title_to_url, query_string, UrlParser, to_js, vote_hash
 from r2.lib.utils import link_duplicates, make_offset_date, to_csv, median, to36
 from r2.lib.utils import trunc_time, timesince, timeuntil
-from r2.lib.template_helpers import add_sr, get_domain
+from r2.lib.template_helpers import add_sr, get_domain, format_number
 from r2.lib.subreddit_search import popular_searches
 from r2.lib.scraper import get_media_embed
 from r2.lib.log import log_text
@@ -57,7 +58,7 @@ from r2.lib.memoize import memoize
 from r2.lib.utils import trunc_string as _truncate
 from r2.lib.filters import safemarkdown
 
-import sys, random, datetime, locale, calendar, simplejson, re, time
+import sys, random, datetime, calendar, simplejson, re, time
 import graph, pycountry, time
 from itertools import chain
 from urllib import quote
@@ -230,7 +231,9 @@ class Reddit(Templated):
                                        type="flat_vert",
                                        base_path="/about/",
                                        css_class="icon-menu",
-                                       separator="")])
+                                       separator="")],
+                              _id="moderation_tools",
+                              collapsible=True)
 
     def sr_moderators(self, limit = 10):
         accounts = Account._byID([uid
@@ -252,17 +255,12 @@ class Reddit(Templated):
         if c.user.pref_show_sponsorships or not c.user.gold:
             ps.append(SponsorshipBox())
 
-        if (c.user_is_loggedin and (isinstance(c.site, ModSR) or
-                                    c.site.is_moderator(c.user))):
-            ps.append(self.sr_admin_menu())
-
         no_ads_yet = True
         if isinstance(c.site, (MultiReddit, ModSR)) and c.user_is_loggedin:
             srs = Subreddit._byID(c.site.sr_ids,data=True,
                                   return_dict=False)
 
-            if (isinstance(c.site, MultiReddit) and
-                Subreddit.user_mods_all(c.user, srs)):
+            if c.user_is_admin or c.site.is_moderator(c.user):
                 ps.append(self.sr_admin_menu())
 
             if srs:
@@ -271,6 +269,9 @@ class Reddit(Templated):
         # don't show the subreddit info bar on cnames unless the option is set
         if not isinstance(c.site, FakeSubreddit) and (not c.cname or c.site.show_cname_sidebar):
             ps.append(SubredditInfoBar())
+            if c.user_is_loggedin and (c.user_is_admin or
+                                       c.site.is_moderator(c.user)):
+                ps.append(self.sr_admin_menu())
             if (c.user.pref_show_adbox or not c.user.gold) and not g.disable_ads:
                 ps.append(Ads())
             no_ads_yet = False
@@ -580,12 +581,12 @@ class SponsorshipBox(Templated):
     pass
 
 class SideContentBox(Templated):
-    def __init__(self, title, content, helplink=None, extra_class=None,
-                 more_href = None, more_text = "more"):
+    def __init__(self, title, content, helplink=None, _id=None, extra_class=None,
+                 more_href = None, more_text = "more", collapsible=False):
         Templated.__init__(self, title=title, helplink = helplink,
-                           content=content, extra_class=extra_class,
-                           more_href = more_href,
-                           more_text = more_text)
+                           content=content, _id=_id, extra_class=extra_class,
+                           more_href = more_href, more_text = more_text,
+                           collapsible=collapsible)
 
 class SideBox(CachedTemplate):
     """
@@ -951,7 +952,7 @@ class LinkInfoPage(Reddit):
                                            num = len(self.duplicates)))
 
         if c.user_is_admin:
-            buttons += [info_button('details')]
+            buttons.append(NamedButton("details", dest="/details/"+self.link._fullname))
 
         # should we show a traffic tab (promoted and author or sponsor)
         if (self.link.promoted is not None and
@@ -1226,6 +1227,9 @@ class ProfilePage(Reddit):
                         NamedButton('disliked'),
                         NamedButton('hidden')]
 
+        if c.user_is_loggedin and (c.user._id == self.user._id or
+                                   c.user_is_admin):
+            main_buttons += [NamedButton('saved')]
 
         toolbar = [PageNameNav('nomenu', title = self.user.name),
                    NavMenu(main_buttons, base_path = path, type="tabmenu")]
@@ -1736,9 +1740,8 @@ class SearchBar(Templated):
     and num_results if any."""
     def __init__(self, num_results = 0, prev_search = '', elapsed_time = 0,
                  search_params = {}, show_feedback=False,
-                 simple=False, restrict_sr=False, site=None, 
-                 subreddit_search=False,
-                 **kw):
+                 simple=False, restrict_sr=False, site=None,
+                 subreddit_search=False, **kw):
 
         # not listed explicitly in args to ensure it translates properly
         self.header = kw.get('header', _("previous search"))
@@ -2914,10 +2917,25 @@ class TrafficViewerList(UserList):
 class DetailsPage(LinkInfoPage):
     extension_handling= False
 
-    def content(self):
-        # TODO: a better way?
+    def __init__(self, thing, *args, **kwargs):
         from admin_pages import Details
-        return self.content_stack((self.link_listing, Details(link = self.link)))
+
+        if isinstance(thing, Link):
+            link = thing
+            comment = None
+            content = Details(thing=thing)
+        elif isinstance(thing, Comment):
+            comment = thing
+            link = Link._byID(comment.link_id)
+            content = PaneStack()
+            content.append(PermalinkMessage(link.make_permalink_slow()))
+            content.append(LinkCommentSep())
+            content.append(CommentPane(link, CommentSortMenu.operator('new'),
+                                   comment, None, 1))
+            content.append(Details(thing=thing))
+
+        kwargs['content'] = content
+        LinkInfoPage.__init__(self, link, comment, *args, **kwargs)
 
 class Cnameframe(Templated):
     """The frame page."""
@@ -3243,14 +3261,14 @@ class PromotedTraffic(Traffic):
         if len(imp) > 2:
             imp_total = sum(x[2] for x in imp)
             self.totals[1] = max(self.totals[1], imp_total)
-            imp_total = locale.format('%d', imp_total, True)
+            imp_total = format_number(imp_total)
             self.imp_graph = TrafficGraph(imp[-72:], ylabels = ['uniques', 'total'],
                                           title = ("recent impressions (%s total)" %
                                                    imp_total))
             cli = self.slice_traffic(self.traffic, 2, 3)
             cli_total = sum(x[2] for x in cli)
             self.totals[3] = max(self.totals[3], cli_total)
-            cli_total = locale.format('%d', cli_total, True)
+            cli_total = format_number(cli_total)
             self.cli_graph = TrafficGraph(cli[-72:], ylabels = ['uniques', 'total'],
                                           title = ("recent clicks (%s total)" %
                                                    cli_total))
@@ -3263,9 +3281,10 @@ class PromotedTraffic(Traffic):
         Templated.__init__(self)
 
     def to_iter(self, localize = True, total = False):
+        locale = c.locale
         def num(x):
             if localize:
-                return locale.format('%d', x, True)
+                return format_number(x, locale)
             return str(x)
         def row(label, data):
             uimp, nimp, ucli, ncli = data
@@ -3396,10 +3415,11 @@ class RedditTraffic(Traffic):
                         user_scale = ( (day_mean * month_len) /
                                        (last_mean * lastmonthlen) )
             last_month_users = 0
+            locale = c.locale
             for x, (date, d) in enumerate(data):
                 res.append([("date", date.strftime("%Y-%m")),
-                            ("", locale.format("%d", d[0], True)),
-                            ("", locale.format("%d", d[1], True))])
+                            ("", format_number(d[0], locale)),
+                            ("", format_number(d[1], locale))])
                 last_d = data[x-1][1] if x else None
                 for i in range(2):
                     # store last month's users for this month's projection
@@ -3417,7 +3437,7 @@ class RedditTraffic(Traffic):
                         else:
                             scaled = float(d[i] * month_len) / yday
                         res[-1].append(("gray",
-                                        locale.format("%d", scaled, True)))
+                                        format_number(scaled, locale)))
                     elif last_d and d[i] and last_d[i]:
                         f = 100 * (float(d[i])/last_d[i] - 1)
 
@@ -3722,9 +3742,10 @@ class Promote_Graph(Templated):
                            promote_blocks = sorted_blocks)
 
     def to_iter(self, localize = True):
+        locale = c.locale
         def num(x):
             if localize:
-                return locale.format('%d', x, True)
+                return format_number(x, locale)
             return str(x)
         for link, uimp, nimp, ucli, ncli in self.recent:
             yield (link._date.strftime("%Y-%m-%d"),

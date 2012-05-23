@@ -36,8 +36,8 @@ from r2.lib.db import queries
 from r2.lib.strings import Score
 from r2.lib import organic
 from r2.lib.jsontemplates import is_api
-from r2.lib.solrsearch import SearchQuery
-from r2.lib.indextank import IndextankQuery
+import r2.lib.solrsearch as solrsearch
+import r2.lib.search as search
 from r2.lib.utils import iters, check_cheating, timeago
 from r2.lib.utils.trial_utils import populate_spotlight
 from r2.lib import sup
@@ -49,6 +49,7 @@ from admin import admin_profile_query
 
 from pylons.i18n import _
 from pylons import Response
+from pylons.controllers.util import redirect_to
 
 import random
 from functools import partial
@@ -129,7 +130,7 @@ class ListingController(RedditController):
             builder_cls = self.builder_cls
         elif isinstance(self.query_obj, Query):
             builder_cls = QueryBuilder
-        elif isinstance(self.query_obj, (SearchQuery,IndextankQuery)):
+        elif isinstance(self.query_obj, (solrsearch.SearchQuery, search.SearchQuery)):
             builder_cls = SearchBuilder
         elif isinstance(self.query_obj, iters):
             builder_cls = IDBuilder
@@ -351,19 +352,6 @@ class HotController(FixListing, ListingController):
         self.infotext = request.get.get('deleted') and strings.user_deleted
         return ListingController.GET_listing(self, **env)
 
-class SavedController(ListingController):
-    where = 'saved'
-    skip = False
-    title_text = _('saved')
-
-    def query(self):
-        return queries.get_saved(c.user)
-
-    @validate(VUser())
-    @listing_api_doc(uri='/saved')
-    def GET_listing(self, **env):
-        return ListingController.GET_listing(self, **env)
-
 class NewController(ListingController):
     where = 'new'
     title_text = _('newest submissions')
@@ -527,6 +515,7 @@ class UserController(ListingController):
                   'submitted': _("submitted by %(user)s"),
                   'liked': _("liked by %(user)s"),
                   'disliked': _("disliked by %(user)s"),
+                  'saved': _("saved by %(user)s"),
                   'hidden': _("hidden by %(user)s")}
         title = titles.get(self.where, _('profile for %(user)s')) \
             % dict(user = self.vuser.name, site = c.site.name)
@@ -547,6 +536,8 @@ class UserController(ListingController):
                 if not item.likes and self.where == 'liked':
                     return False
                 if item.likes is not False and self.where == 'disliked':
+                    return False
+                if self.where == 'saved' and not item.saved:
                     return False
             return wouldkeep and (getattr(item, "promoted", None) is None and
                     (self.where == "deleted" or
@@ -580,6 +571,9 @@ class UserController(ListingController):
         elif self.where == 'hidden':
             q = queries.get_hidden(self.vuser)
 
+        elif self.where == 'saved':
+            q = queries.get_saved(self.vuser)
+
         elif c.user_is_admin:
             q = admin_profile_query(self.vuser, self.where, desc('_date'))
 
@@ -594,7 +588,7 @@ class UserController(ListingController):
     @listing_api_doc(section=api_section.users, uri='/{username}/{where}',
                      uri_variants=['/{username}/' + where for where in [
                                        'overview', 'submitted', 'commented',
-                                       'liked', 'disliked', 'hidden']])
+                                       'liked', 'disliked', 'hidden', 'saved']])
     def GET_listing(self, where, vuser, sort, time, **env):
         self.where = where
         self.sort = sort
@@ -616,7 +610,12 @@ class UserController(ListingController):
 
         if (where not in ('overview', 'submitted', 'comments')
             and not votes_visible(vuser)):
-            return self.abort404()
+            return self.abort403()
+
+        if where == "saved" and not (c.user_is_loggedin and
+                                     (c.user._id == vuser._id or
+                                      c.user_is_admin)):
+            self.abort403()
 
         check_cheating('user')
 
@@ -636,6 +635,19 @@ class UserController(ListingController):
         if not is_api() or not vuser:
             return self.abort404()
         return Reddit(content = Wrapped(vuser)).render()
+
+    def GET_saved_redirect(self):
+        if not c.user_is_loggedin:
+            abort(404)
+
+        dest = "/".join(("/user", c.user.name, "saved"))
+        extension = request.environ.get('extension')
+        if extension:
+            dest = ".".join((dest, extension))
+        query_string = request.environ.get('QUERY_STRING')
+        if query_string:
+            dest += "?" + query_string
+        return redirect_to(dest)
 
 class MessageController(ListingController):
     show_nums = False
@@ -769,13 +781,12 @@ class MessageController(ListingController):
         elif self.where == 'sent':
             q = queries.get_sent(c.user)
         elif self.where == 'multi' and self.subwhere == 'unread':
-            q = queries.merge_results(*[queries.get_unread_subreddit_messages(s) for s in self.srs])
+            q = queries.get_unread_subreddit_messages_multi(c.site.kept_sr_ids)
         elif self.where == 'moderator' and self.subwhere == 'unread':
             if c.default_sr:
                 srids = Subreddit.reverse_moderator_ids(c.user)
                 srs = Subreddit._byID(srids, data = False, return_dict = False)
-                q = queries.merge_results(
-                    *[queries.get_unread_subreddit_messages(s) for s in srs])
+                q = queries.get_unread_subreddit_messages_multi(srs)
             else:
                 q = queries.get_unread_subreddit_messages(c.site)
         elif self.where in ('moderator', 'multi'):
@@ -804,11 +815,9 @@ class MessageController(ListingController):
         if not (c.default_sr or c.site.is_moderator(c.user) or c.user_is_admin):
             abort(403, "forbidden")
         if isinstance(c.site, MultiReddit):
-            srs = Subreddit._byID(c.site.sr_ids, data=False, return_dict=False)
-            if not (c.user_is_admin or Subreddit.user_mods_all(c.user, srs)):
+            if not (c.user_is_admin or c.site.is_moderator(c.user)):
                 self.abort403()
             self.where = "multi"
-            self.srs = srs
         elif isinstance(c.site, ModSR) or not c.default_sr:
             self.where = "moderator"
         else:

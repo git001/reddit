@@ -28,9 +28,10 @@ hooks to the UI are the same.
 """
 
 import r2.lib.helpers as h
-from pylons import g
+from pylons import g, c
 from pylons.i18n import _, ungettext
-import random, locale
+import random
+import babel.numbers
 
 __all__ = ['StringHandler', 'strings', 'PluralManager', 'plurals',
            'Score', 'rand_strings']
@@ -75,6 +76,8 @@ string_dict = dict(
 
     oauth_login_msg = _("Log in or register to connect your populr account with [%(app_name)s](%(app_about_url)s)."),
 
+    login_fallback_msg = _("try using our secure login form."),
+
     legal = _("I understand and agree that registration on or use of this site constitutes agreement to its %(user_agreement)s and %(privacy_policy)s."),
 
     friends = _('to view populr with only submissions from your friends, use [populr.de/r/friends](%s)'),
@@ -118,6 +121,7 @@ string_dict = dict(
         invalid_property = _('"%(cssprop)s" is not a valid CSS property'),
         invalid_val_for_prop = _('"%(cssvalue)s" is not a valid value for CSS property "%(cssprop)s"'),
         too_big = _('too big. keep it under %(max_size)dkb'),
+        max_size = _('max size: %(max_size)dkB'),
         syntax_error = _('syntax error: "%(syntaxerror)s"'),
         no_imports = _('@imports are not allowed'),
         invalid_property_list = _('invalid CSS property list "%(proplist)s"'),
@@ -162,8 +166,8 @@ string_dict = dict(
     gold_summary_signed_gift = _("You're about to give %(amount)s of populr gold to %(recipient)s, who will be told that it came from you."),
     gold_summary_anonymous_gift = _("You're about to give %(amount)s of populr gold to %(recipient)s. It will be an anonymous gift."),
     unvotable_message = _("sorry, this has been archived and can no longer be voted on"),
-    account_activity_blurb = _("This page shows a history of recent activity on your account. If you notice unusual activity, you should change your password immediately. Location information is guessed from your computer's IP address and may be wildly wrong, especially for visits from mobile devices."),
-    your_current_ip_is = _("You are currently accessing populr from this IP address: %(address)s."),
+    account_activity_blurb = _("This page shows a history of recent activity on your account. If you notice unusual activity, you should change your password immediately. Location information is guessed from your computer's IP address and may be wildly wrong, especially for visits from mobile devices. Note: due to a bug, private-use addresses (starting with 10.) sometimes show up erroneously in this list after regular use of the site."),
+    your_current_ip_is = _("You are currently accessing reddit from this IP address: %(address)s."),
 
 )
 
@@ -276,7 +280,7 @@ class Score(object):
     @staticmethod
     def _people(x, label):
         return strings.person_label % \
-            dict(num = locale.format("%d", x, True),
+            dict(num = babel.numbers.format_number(x, c.locale),
                  persons = label(x))
 
     @staticmethod

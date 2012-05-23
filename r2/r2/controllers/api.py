@@ -745,6 +745,7 @@ class ApiController(RedditController):
     @noresponse(VUser(),
                 VModhash(),
                 thing = VByNameIfAuthor('id'))
+    @api_doc(api_section.links_and_comments)
     def POST_del(self, thing):
         if not thing: return
         '''for deleting all sorts of things'''
@@ -914,7 +915,7 @@ class ApiController(RedditController):
 
             if (item._date < timeago('3 minutes')
                 or (item._ups + item._downs > 2)):
-                item.editted = True
+                item.editted = c.start_time
 
             item._commit()
 
@@ -1367,6 +1368,7 @@ class ApiController(RedditController):
                    title = VLength("title", max_length = 100),
                    header_title = VLength("header-title", max_length = 500),
                    domain = VCnameDomain("domain"),
+                   public_description = VMarkdown("public_description", max_length = 500),
                    description = VMarkdown("description", max_length = 5120),
                    lang = VLang("lang"),
                    over_18 = VBoolean('over_18'),
@@ -1392,7 +1394,7 @@ class ApiController(RedditController):
                   if k in ('name', 'title', 'domain', 'description', 'over_18',
                            'show_media', 'show_cname_sidebar', 'type', 'link_type', 'lang',
                            "css_on_cname", "header_title", 
-                           'allow_top'))
+                           'allow_top', 'public_description'))
 
         #if a user is banned, return rate-limit errors
         if c.user._spam:
@@ -1418,6 +1420,7 @@ class ApiController(RedditController):
         elif form.has_errors('domain', errors.BAD_CNAME, errors.USED_CNAME):
             form.find('#example_domain').hide()
         elif (form.has_errors(('type', 'link_type'), errors.INVALID_OPTION) or
+              form.has_errors('public_description', errors.TOO_LONG) or
               form.has_errors('description', errors.TOO_LONG)):
             pass
 
@@ -1491,7 +1494,7 @@ class ApiController(RedditController):
             username = None
         d = dict(username=username, q=q, sort=sort, t=t)
         hex = md5(repr(d)).hexdigest()
-        key = "indextankfeedback-%s-%s-%s" % (timestamp[:10], request.ip, hex)
+        key = "searchfeedback-%s-%s-%s" % (timestamp[:10], request.ip, hex)
         d['timestamp'] = timestamp
         d['approval'] = approval
         g.hardcache.set(key, d, time=86400 * 7)

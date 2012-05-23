@@ -46,6 +46,7 @@ from hashlib import sha1, md5
 from urllib import quote, unquote
 import simplejson
 import locale, socket
+import babel.core
 
 from r2.lib.tracking import encrypt, decrypt
 from pylons import Response
@@ -387,6 +388,11 @@ def set_iface_lang():
         except h.LanguageError:
             #we don't have a translation for that language
             h.set_lang(g.lang, graceful_fail = True)
+
+    try:
+        c.locale = babel.core.Locale.parse(c.lang, sep='-')
+    except (babel.core.UnknownLocaleError, ValueError):
+        c.locale = babel.core.Locale.parse(g.lang, sep='-')
 
     #TODO: add exceptions here for rtl languages
     if c.lang in ('ar', 'he', 'fa'):
@@ -892,15 +898,16 @@ class RedditController(MinimalController):
                 return self.intermediate_redirect("/over18")
 
         #check whether to allow custom styles
-        c.allow_styles = self.allow_stylesheets
+        c.allow_styles = True
+        c.can_apply_styles = self.allow_stylesheets
         if g.css_killswitch:
-            c.allow_styles = False
+            c.can_apply_styles = False
         #if the preference is set and we're not at a cname
         elif not c.user.pref_show_stylesheets and not c.cname:
-            c.allow_styles = False
+            c.can_apply_styles = False
         #if the site has a cname, but we're not using it
         elif c.site.domain and c.site.css_on_cname and not c.cname:
-            c.allow_styles = False
+            c.can_apply_styles = False
 
     def check_modified(self, thing, action,
                        private=True, max_age=0, must_revalidate=True):
@@ -925,7 +932,7 @@ class RedditController(MinimalController):
 
     def search_fail(self, exception):
         from r2.lib.contrib.pysolr import SolrError
-        from r2.lib.indextank import IndextankException
+        from r2.lib.search import SearchException
         if isinstance(exception, SolrError):
             errmsg = "SolrError: %r" % exception
 
@@ -934,8 +941,8 @@ class RedditController(MinimalController):
                 g.log.debug(errmsg)
             else:
                 g.log.error(errmsg)
-        elif isinstance(exception, (IndextankException, socket.error)):
-            g.log.error("IndexTank Error: %s" % repr(exception))
+        elif isinstance(exception, SearchException + (socket.error,)):
+            g.log.error("Search Error: %s" % repr(exception))
 
         errpage = pages.RedditError(_("search failed"),
                                     strings.search_failed)
